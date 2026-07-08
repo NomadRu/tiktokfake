@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Админ-панель ФотоШпион</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background: #f4f4f4; }
+        h1 { color: #333; }
+        .stats { background: #fff; padding: 15px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        .stats span { font-weight: bold; color: #fe2c55; }
+        table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+        th, td { padding: 10px 15px; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background: #fe2c55; color: #fff; }
+        tr:hover { background: #f9f9f9; }
+        .form-add { background: #fff; padding: 15px; border-radius: 8px; margin-top: 20px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+        .form-add input[type="text"], .form-add input[type="number"] { padding: 8px; width: 200px; margin-right: 10px; border: 1px solid #ccc; border-radius: 4px; }
+        .form-add button { padding: 8px 20px; background: #fe2c55; color: #fff; border: none; border-radius: 4px; cursor: pointer; }
+        .form-add button:hover { background: #e0244a; }
+        .status-ok { color: green; }
+        .status-expired { color: red; }
+    </style>
+</head>
+<body>
+    <h1>📸 ФотоШпион – Админ-панель</h1>
+    <div class="stats">
+        <p>👥 Всего пользователей: <span>{{ total_users }}</span></p>
+        <p>📸 Всего куплено фото: <span>{{ total_photos }}</span></p>
+    </div>
+
+    <div class="form-add">
+        <h3>➕ Добавить фото пользователю</h3>
+        <form action="/admin/add" method="POST">
+            <input type="text" name="ref" placeholder="Введите ref" required>
+            <input type="number" name="count" placeholder="Количество" min="1" required>
+            <button type="submit">Добавить</button>
+        </form>
+    </div>
+
+    <h2>📋 Список пользователей</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Chat ID</th>
+                <th>Ref</th>
+                <th>Всего фото</th>
+                <th>Использовано</th>
+                <th>Осталось</th>
+                <th>Статус</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for user in users %}
+            <tr>
+                <td>{{ user[0] }}</td>
+                <td><code>{{ user[1] }}</code></td>
+                <td>{{ user[2] }}</td>
+                <td>{{ user[3] }}</td>
+                <td>{{ user[2] - user[3] }}</td>
+                <td>
+                    {% if user[2] - user[3] > 0 %}
+                        <span class="status-ok">✅ Активен</span>
+                    {% else %}
+                        <span class="status-expired">❌ Исчерпан</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</body>
+  </html>
