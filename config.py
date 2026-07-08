@@ -1,0 +1,5 @@
+BOT_TOKEN = "8305233302:AAHf3mBUH5rIsQWZF4tF9nAyHvakCBbQIps"
+BASE_URL = "https://nomadru.github.io/tiktokfake"
+ADMIN_CHAT_ID = 8533142719
+FREE_TRIAL_PHOTOS = 2
+ADMIN_USERNAME = "pytin_legend"
