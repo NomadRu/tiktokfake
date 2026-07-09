@@ -19,7 +19,7 @@ ADMIN_USERNAME = "pytin_legend"
 
 # ---------- ЮMoney ----------
 YOOMONEY_TOKEN = "4B2E96645E91CFE9026C2C1D3198EA0B318C42F51982ACD2EF8F2B7ECAF19383"
-YOOMONEY_RECEIVER = "5599002103240497"   # ← ЗДЕСЬ ВСТАВЬ СВОЙ НОМЕР КОШЕЛЬКА (например, 410011234567890)
+YOOMONEY_RECEIVER = "4100118843465904"   # ← ЗДЕСЬ ВСТАВЬ СВОЙ НОМЕР КОШЕЛЬКА (например, 410011234567890)
 YOOMONEY_REDIRECT = "https://t.me/@photoshoionprank_bot"   # можно ссылку на бота
 
 # ---------- Тарифы (цена в рублях, кол-во фото) ----------
