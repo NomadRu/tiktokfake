@@ -6,7 +6,6 @@ import json
 import threading
 import requests
 from flask import Flask, request, jsonify, render_template
-from yoomoney import Client, Quickpay
 
 # ======================================================
 #  КОНФИГ
@@ -17,12 +16,11 @@ ADMIN_CHAT_ID = 8533142719
 FREE_TRIAL_PHOTOS = 2
 ADMIN_USERNAME = "pytin_legend"
 
-# ---------- ЮMoney ----------
-YOOMONEY_TOKEN = "4B2E96645E91CFE9026C2C1D3198EA0B318C42F51982ACD2EF8F2B7ECAF19383"
-YOOMONEY_RECEIVER = "4100118843465904"   # ← ЗДЕСЬ ВСТАВЬ СВОЙ НОМЕР КОШЕЛЬКА (например, 410011234567890)
-YOOMONEY_REDIRECT = "https://t.me/@photoshoionprank_bot"   # можно ссылку на бота
+# Реквизиты для оплаты (СБП)
+PAYMENT_PHONE = "+79278880124"
+PAYMENT_DETAILS = f"Перевод на номер {PAYMENT_PHONE} (СБП). В назначении платежа укажите свой ref-код."
 
-# ---------- Тарифы (цена в рублях, кол-во фото) ----------
+# Тарифы (цена в рублях, кол-во фото)
 TARIFFS = [
     {"photos": 1,  "price": 5},
     {"photos": 10, "price": 30},
@@ -109,30 +107,7 @@ def increment_referral_count(chat_id):
 #  РЕФЕРАЛЬНАЯ СИСТЕМА
 # ======================================================
 def get_ref_link(chat_id):
-    return f"https://t.me/твой_бот?start=ref_{chat_id}"
-
-# ======================================================
-#  ЮMoney (создание платежа)
-# ======================================================
-def create_payment(chat_id, amount, description, tariff_photos):
-    client = Client(YOOMONEY_TOKEN)
-    quickpay = Quickpay(
-        receiver=YOOMONEY_RECEIVER,
-        quickpay_form="shop",
-        targets=f"{description} ({tariff_photos} фото)",
-        paymentType="SB",
-        sum=amount,
-        label=str(chat_id)
-    )
-    return quickpay.redirected_url
-
-def check_payment(chat_id):
-    client = Client(YOOMONEY_TOKEN)
-    history = client.operation_history(label=str(chat_id))
-    for op in history.operations:
-        if op.status == "success":
-            return True
-    return False
+    return f"https://t.me/@photoshoionprank_bot?start=ref_{chat_id}"
 
 # ======================================================
 #  БОТ (отправка сообщений, клавиатуры, обработчики)
@@ -150,6 +125,16 @@ def answer_callback(callback_id, text=None):
     if text:
         data["text"] = text
     requests.post(url, json=data)
+
+def forward_to_admin(text, photo=None):
+    # Отправляем сообщение админу (можно с фото)
+    if photo:
+        files = {'photo': (photo.filename, photo.stream, photo.mimetype)}
+        data = {'chat_id': ADMIN_CHAT_ID, 'caption': text}
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+        requests.post(url, data=data, files=files)
+    else:
+        send_message(ADMIN_CHAT_ID, text)
 
 def main_keyboard():
     return {
@@ -254,54 +239,35 @@ def handle_callback(chat_id, callback_id, data):
         answer_callback(callback_id)
 
     elif data.startswith("tariff_"):
-        # data = tariff_1_5, tariff_10_30, tariff_100_250
         parts = data.split("_")
         photos = int(parts[1])
         price = int(parts[2])
-        payment_url = create_payment(chat_id, price, f"Оплата {photos} фото", photos)
+        # Показываем реквизиты и кнопку "Я оплатил"
         send_message(chat_id,
-            f"💳 Для покупки <b>{photos} фото</b> переведи <b>{price} руб</b> по ссылке:\n"
-            f"<code>{payment_url}</code>\n\n"
-            f"После оплаты нажми «Проверить оплату».",
+            f"💳 Для покупки <b>{photos} фото</b> переведи <b>{price} руб</b> на номер <b>{PAYMENT_PHONE}</b> (СБП).\n\n"
+            f"В назначении платежа укажи свой ref-код: <code>{get_user(chat_id)[0]}</code>\n\n"
+            f"После перевода нажми кнопку «Я оплатил» и прикрепи чек (скриншот).",
             reply_markup={"inline_keyboard": [
-                [{"text": "✅ Проверить оплату", "callback_data": "check_payment"}],
+                [{"text": "✅ Я оплатил", "callback_data": f"pay_confirmed_{photos}_{price}"}],
                 [{"text": "🔙 Назад", "callback_data": "back"}]
             ]}
         )
         answer_callback(callback_id)
 
-    elif data == "check_payment":
-        if check_payment(chat_id):
-            # Начисляем фото (по умолчанию 1, но если платили за 10 или 100, нужно знать сколько)
-            # Мы не храним в платеже количество фото, поэтому используем последний выбранный тариф.
-            # Для простоты будем начислять 1 фото за любую оплату, но лучше хранить сумму и определять тариф.
-            # Сделаем так: если сумма 5 руб – 1 фото, 30 руб – 10 фото, 250 руб – 100 фото.
-            # Получим сумму из истории – но проще запросить у пользователя ввести сумму или использовать фиксированные тарифы.
-            # Реализуем через проверку последнего успешного платежа.
-            client = Client(YOOMONEY_TOKEN)
-            history = client.operation_history(label=str(chat_id))
-            for op in history.operations:
-                if op.status == "success":
-                    amount = op.amount
-                    if amount == 5:
-                        photos_to_add = 1
-                    elif amount == 30:
-                        photos_to_add = 10
-                    elif amount == 250:
-                        photos_to_add = 100
-                    else:
-                        photos_to_add = 1  # на всякий случай
-                    row = get_user(chat_id)
-                    if row:
-                        ref, end_date, limit, used, _, _ = row
-                        new_limit = limit + photos_to_add
-                        update_user_limit(chat_id, new_limit)
-                        send_message(chat_id, f"✅ Оплата подтверждена! Тебе начислено {photos_to_add} фото. Новый лимит: {new_limit}")
-                    break
-            else:
-                send_message(chat_id, "❌ Платёж не найден. Попробуй позже или проверь ссылку.", reply_markup=main_keyboard())
-        else:
-            send_message(chat_id, "❌ Платёж не найден. Попробуй позже или проверь ссылку.", reply_markup=main_keyboard())
+    elif data.startswith("pay_confirmed_"):
+        # data = pay_confirmed_1_5
+        parts = data.split("_")
+        photos = int(parts[2])
+        price = int(parts[3])
+        # Просим пользователя прислать чек
+        send_message(chat_id,
+            f"📩 Отправь мне сюда <b>скриншот чека</b> (или фото перевода).\n\n"
+            f"После проверки админ подтвердит оплату и начислит фото."
+        )
+        # Сохраняем временное состояние – ожидание чека
+        # Просто запоминаем в словаре или в БД (можно в отдельной таблице, но для простоты используем глобальный словарь)
+        global pending_payments
+        pending_payments[chat_id] = {"photos": photos, "price": price}
         answer_callback(callback_id)
 
     elif data == "invite":
@@ -337,14 +303,46 @@ def handle_callback(chat_id, callback_id, data):
         send_message(chat_id, "Главное меню:", reply_markup=main_keyboard())
         answer_callback(callback_id)
 
+# Глобальный словарь для ожидания чеков
+pending_payments = {}
+
+# ======================================================
+#  ОБРАБОТЧИК СООБЩЕНИЙ С ФОТО (чеки)
+# ======================================================
+def handle_photo_message(chat_id, photo, caption=None):
+    # Проверяем, есть ли у пользователя ожидающий платёж
+    if chat_id not in pending_payments:
+        send_message(chat_id, "❌ У тебя нет активного запроса на оплату. Выбери тариф сначала.")
+        return
+    
+    payment = pending_payments.pop(chat_id)  # забираем и удаляем
+    photos = payment["photos"]
+    price = payment["price"]
+    ref = get_user(chat_id)[0]
+    
+    # Отправляем админу уведомление с чеком
+    caption_text = (
+        f"💳 <b>Новый платеж</b>\n\n"
+        f"Пользователь: @{chat_id} (ref: {ref})\n"
+        f"Сумма: {price} руб\n"
+        f"Кол-во фото: {photos}\n"
+        f"Статус: ожидает подтверждения"
+    )
+    forward_to_admin(caption_text, photo)
+    send_message(chat_id, "✅ Чек отправлен админу. Ожидай подтверждения в течение нескольких минут.")
+
+# ======================================================
+#  АДМИН-КОМАНДЫ (confirm / reject)
+# ======================================================
 def handle_admin_command(chat_id, text):
     if chat_id != ADMIN_CHAT_ID:
         return False
     parts = text.split()
     cmd = parts[0].lower()
-    if cmd == "/addphotos":
+    
+    if cmd == "/confirm":
         if len(parts) < 3:
-            send_message(chat_id, "❌ Используй: /addphotos <ref> <количество>")
+            send_message(chat_id, "❌ Используй: /confirm <ref> <количество_фото>")
             return True
         ref = parts[1]
         try:
@@ -359,9 +357,25 @@ def handle_admin_command(chat_id, text):
         chat_id_u, end_date, old_limit, used, _ = user
         new_limit = old_limit + add_count
         update_user_limit(chat_id_u, new_limit)
-        send_message(chat_id, f"✅ Добавлено {add_count} фото для {ref}. Новый лимит: {new_limit}")
-        send_message(chat_id_u, f"✅ Админ добавил тебе {add_count} фото. Новый лимит: {new_limit}")
+        send_message(chat_id, f"✅ Подтверждено: добавлено {add_count} фото для {ref}. Новый лимит: {new_limit}")
+        send_message(chat_id_u, f"✅ Ваш платёж подтверждён! Начислено {add_count} фото. Новый лимит: {new_limit}")
         return True
+
+    elif cmd == "/reject":
+        if len(parts) < 2:
+            send_message(chat_id, "❌ Используй: /reject <ref>")
+            return True
+        ref = parts[1]
+        user = get_user_by_ref(ref)
+        if not user:
+            send_message(chat_id, f"❌ Пользователь с ref {ref} не найден")
+            return True
+        chat_id_u, end_date, limit, used, _ = user
+        send_message(chat_id_u, "❌ Ваш платёж отклонён. Проверьте правильность перевода или свяжитесь с админом.")
+        send_message(chat_id, f"✅ Отклонён платёж для {ref}")
+        return True
+
+    # Другие админ-команды (listusers, info, addphotos) — оставляем
     elif cmd == "/listusers":
         users = get_all_users()
         if not users:
@@ -374,6 +388,7 @@ def handle_admin_command(chat_id, text):
             msg += f"• {ref} | осталось: {remaining} | всего: {limit} | рефералов: {ref_count}\n"
         send_message(chat_id, msg)
         return True
+
     elif cmd == "/info":
         if len(parts) < 2:
             send_message(chat_id, "❌ Используй: /info <ref>")
@@ -394,9 +409,13 @@ def handle_admin_command(chat_id, text):
             f"• Срок: {end_date}"
         )
         return True
+
     else:
         return False
 
+# ======================================================
+#  ОСНОВНОЙ ЦИКЛ БОТА (поллинг)
+# ======================================================
 def bot_polling():
     last_update_id = 0
     print("🤖 Бот запущен в фоне")
@@ -414,6 +433,32 @@ def bot_polling():
                 if "message" in upd:
                     msg = upd["message"]
                     chat_id = msg["chat"]["id"]
+                    # Проверка на фото (чек)
+                    if "photo" in msg:
+                        photo = msg["photo"][-1]  # берём самое качественное
+                        # Получаем файл
+                        file_id = photo["file_id"]
+                        # Скачиваем файл через getFile
+                        file_url = f"https://api.telegram.org/bot{BOT_TOKEN}/getFile?file_id={file_id}"
+                        resp_file = requests.get(file_url)
+                        if resp_file.status_code == 200:
+                            file_path = resp_file.json().get("result", {}).get("file_path")
+                            if file_path:
+                                file_download = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+                                photo_data = requests.get(file_download)
+                                # Создаём объект файла для отправки админу
+                                from io import BytesIO
+                                photo_file = BytesIO(photo_data.content)
+                                photo_file.name = "check.jpg"
+                                # Передаём в обработчик (создадим объект, похожий на Flask-файл)
+                                class FakeFile:
+                                    def __init__(self, data, name):
+                                        self.stream = data
+                                        self.filename = name
+                                        self.mimetype = "image/jpeg"
+                                fake_file = FakeFile(photo_file, "check.jpg")
+                                handle_photo_message(chat_id, fake_file)
+                    # Текстовые сообщения
                     if "text" in msg:
                         text = msg["text"]
                         if text.startswith("/start"):
@@ -423,6 +468,9 @@ def bot_polling():
                                 handled = handle_admin_command(chat_id, text)
                                 if handled:
                                     continue
+                            else:
+                                # Если пользователь что-то пишет, но не фото
+                                pass
                 if "callback_query" in upd:
                     cb = upd["callback_query"]
                     chat_id = cb["from"]["id"]
