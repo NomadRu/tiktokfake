@@ -5,7 +5,8 @@ import time
 import json
 import threading
 import requests
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, session, redirect, url_for
+from functools import wraps
 
 # ======================================================
 #  КОНФИГ
@@ -16,11 +17,14 @@ ADMIN_CHAT_ID = 8533142719
 FREE_TRIAL_PHOTOS = 2
 ADMIN_USERNAME = "pytin_legend"
 
+# Пароль для входа в админку (смени на свой!)
+ADMIN_PASSWORD = "pytin2024"
+SECRET_KEY = "supersecretkey_change_me"  # для сессий
+
 # Реквизиты для оплаты (СБП)
 PAYMENT_PHONE = "+79278880124"
-PAYMENT_DETAILS = f"Перевод на номер {PAYMENT_PHONE} (СБП). В назначении платежа укажите свой ref-код."
 
-# Тарифы (цена в рублях, кол-во фото)
+# Тарифы
 TARIFFS = [
     {"photos": 1,  "price": 5},
     {"photos": 10, "price": 30},
@@ -43,6 +47,17 @@ def init_db():
             tariff_name TEXT,
             referrer_id INTEGER DEFAULT NULL,
             referral_count INTEGER DEFAULT 0
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS pending_payments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER,
+            ref TEXT,
+            photos INTEGER,
+            price INTEGER,
+            status TEXT DEFAULT 'pending',
+            created_at TEXT
         )
     ''')
     conn.commit()
@@ -103,14 +118,34 @@ def increment_referral_count(chat_id):
     conn.commit()
     conn.close()
 
-# ======================================================
-#  РЕФЕРАЛЬНАЯ СИСТЕМА
-# ======================================================
-def get_ref_link(chat_id):
-    return f"https://t.me/@photoshoionprank_bot?start=ref_{chat_id}"
+# ===== Платежи =====
+def add_pending_payment(chat_id, ref, photos, price):
+    conn = sqlite3.connect('db.sqlite')
+    c = conn.cursor()
+    c.execute('''
+        INSERT INTO pending_payments (chat_id, ref, photos, price, status, created_at)
+        VALUES (?, ?, ?, ?, 'pending', ?)
+    ''', (chat_id, ref, photos, price, datetime.datetime.now().isoformat()))
+    conn.commit()
+    conn.close()
+
+def get_pending_payments():
+    conn = sqlite3.connect('db.sqlite')
+    c = conn.cursor()
+    c.execute('SELECT id, chat_id, ref, photos, price, created_at FROM pending_payments WHERE status="pending" ORDER BY created_at DESC')
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+def update_payment_status(payment_id, status):
+    conn = sqlite3.connect('db.sqlite')
+    c = conn.cursor()
+    c.execute('UPDATE pending_payments SET status=? WHERE id=?', (status, payment_id))
+    conn.commit()
+    conn.close()
 
 # ======================================================
-#  БОТ (отправка сообщений, клавиатуры, обработчики)
+#  БОТ (только отправка сообщений и приём чеков)
 # ======================================================
 def send_message(chat_id, text, reply_markup=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -125,16 +160,6 @@ def answer_callback(callback_id, text=None):
     if text:
         data["text"] = text
     requests.post(url, json=data)
-
-def forward_to_admin(text, photo=None):
-    # Отправляем сообщение админу (можно с фото)
-    if photo:
-        files = {'photo': (photo.filename, photo.stream, photo.mimetype)}
-        data = {'chat_id': ADMIN_CHAT_ID, 'caption': text}
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
-        requests.post(url, data=data, files=files)
-    else:
-        send_message(ADMIN_CHAT_ID, text)
 
 def main_keyboard():
     return {
@@ -242,11 +267,11 @@ def handle_callback(chat_id, callback_id, data):
         parts = data.split("_")
         photos = int(parts[1])
         price = int(parts[2])
-        # Показываем реквизиты и кнопку "Я оплатил"
+        ref = get_user(chat_id)[0]
         send_message(chat_id,
             f"💳 Для покупки <b>{photos} фото</b> переведи <b>{price} руб</b> на номер <b>{PAYMENT_PHONE}</b> (СБП).\n\n"
-            f"В назначении платежа укажи свой ref-код: <code>{get_user(chat_id)[0]}</code>\n\n"
-            f"После перевода нажми кнопку «Я оплатил» и прикрепи чек (скриншот).",
+            f"В назначении платежа укажи свой ref-код: <code>{ref}</code>\n\n"
+            f"После перевода нажми кнопку «Я оплатил» и прикрепи чек.",
             reply_markup={"inline_keyboard": [
                 [{"text": "✅ Я оплатил", "callback_data": f"pay_confirmed_{photos}_{price}"}],
                 [{"text": "🔙 Назад", "callback_data": "back"}]
@@ -255,19 +280,16 @@ def handle_callback(chat_id, callback_id, data):
         answer_callback(callback_id)
 
     elif data.startswith("pay_confirmed_"):
-        # data = pay_confirmed_1_5
         parts = data.split("_")
         photos = int(parts[2])
         price = int(parts[3])
-        # Просим пользователя прислать чек
+        ref = get_user(chat_id)[0]
+        # Сохраняем в pending_payments
+        add_pending_payment(chat_id, ref, photos, price)
         send_message(chat_id,
-            f"📩 Отправь мне сюда <b>скриншот чека</b> (или фото перевода).\n\n"
-            f"После проверки админ подтвердит оплату и начислит фото."
+            f"📩 Отправь сюда <b>скриншот чека</b>.\n"
+            f"После проверки админ начислит фото."
         )
-        # Сохраняем временное состояние – ожидание чека
-        # Просто запоминаем в словаре или в БД (можно в отдельной таблице, но для простоты используем глобальный словарь)
-        global pending_payments
-        pending_payments[chat_id] = {"photos": photos, "price": price}
         answer_callback(callback_id)
 
     elif data == "invite":
@@ -276,7 +298,7 @@ def handle_callback(chat_id, callback_id, data):
             send_message(chat_id, "Сначала напиши /start.", reply_markup=main_keyboard())
             answer_callback(callback_id)
             return
-        ref_link = get_ref_link(chat_id)
+        ref_link = f"https://t.me/твой_бот?start=ref_{chat_id}"
         send_message(chat_id,
             f"👥 Пригласи друга по этой ссылке:\n<code>{ref_link}</code>\n\n"
             f"Когда друг перейдёт и сделает первое фото — ты получишь <b>+1 фото</b> на баланс!",
@@ -294,7 +316,7 @@ def handle_callback(chat_id, callback_id, data):
         text = (
             f"📈 <b>Твои рефералы</b>\n\n"
             f"• Приглашено друзей: {referral_count}\n"
-            f"• Бонусных фото получено: {referral_count} (по 1 за каждого)"
+            f"• Бонусных фото получено: {referral_count}"
         )
         send_message(chat_id, text, reply_markup=back_keyboard())
         answer_callback(callback_id)
@@ -303,118 +325,30 @@ def handle_callback(chat_id, callback_id, data):
         send_message(chat_id, "Главное меню:", reply_markup=main_keyboard())
         answer_callback(callback_id)
 
-# Глобальный словарь для ожидания чеков
-pending_payments = {}
-
 # ======================================================
-#  ОБРАБОТЧИК СООБЩЕНИЙ С ФОТО (чеки)
+#  ОБРАБОТКА ЧЕКОВ
 # ======================================================
-def handle_photo_message(chat_id, photo, caption=None):
-    # Проверяем, есть ли у пользователя ожидающий платёж
-    if chat_id not in pending_payments:
-        send_message(chat_id, "❌ У тебя нет активного запроса на оплату. Выбери тариф сначала.")
+def handle_photo_message(chat_id, file_id):
+    # Скачиваем фото
+    file_url = f"https://api.telegram.org/bot{BOT_TOKEN}/getFile?file_id={file_id}"
+    resp = requests.get(file_url)
+    if resp.status_code != 200:
+        send_message(chat_id, "❌ Ошибка при получении файла.")
         return
-    
-    payment = pending_payments.pop(chat_id)  # забираем и удаляем
-    photos = payment["photos"]
-    price = payment["price"]
-    ref = get_user(chat_id)[0]
-    
-    # Отправляем админу уведомление с чеком
-    caption_text = (
-        f"💳 <b>Новый платеж</b>\n\n"
-        f"Пользователь: @{chat_id} (ref: {ref})\n"
-        f"Сумма: {price} руб\n"
-        f"Кол-во фото: {photos}\n"
-        f"Статус: ожидает подтверждения"
-    )
-    forward_to_admin(caption_text, photo)
-    send_message(chat_id, "✅ Чек отправлен админу. Ожидай подтверждения в течение нескольких минут.")
+    file_path = resp.json().get("result", {}).get("file_path")
+    if not file_path:
+        send_message(chat_id, "❌ Не удалось получить файл.")
+        return
+    file_download = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+    photo_data = requests.get(file_download)
+    # Отправляем админу
+    files = {'photo': ('check.jpg', photo_data.content, 'image/jpeg')}
+    data = {'chat_id': ADMIN_CHAT_ID, 'caption': f"💳 Чек от {chat_id}\nПроверь в админ-панели."}
+    requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto", data=data, files=files)
+    send_message(chat_id, "✅ Чек отправлен. Ожидай подтверждения.")
 
 # ======================================================
-#  АДМИН-КОМАНДЫ (confirm / reject)
-# ======================================================
-def handle_admin_command(chat_id, text):
-    if chat_id != ADMIN_CHAT_ID:
-        return False
-    parts = text.split()
-    cmd = parts[0].lower()
-    
-    if cmd == "/confirm":
-        if len(parts) < 3:
-            send_message(chat_id, "❌ Используй: /confirm <ref> <количество_фото>")
-            return True
-        ref = parts[1]
-        try:
-            add_count = int(parts[2])
-        except:
-            send_message(chat_id, "❌ Количество должно быть числом")
-            return True
-        user = get_user_by_ref(ref)
-        if not user:
-            send_message(chat_id, f"❌ Пользователь с ref {ref} не найден")
-            return True
-        chat_id_u, end_date, old_limit, used, _ = user
-        new_limit = old_limit + add_count
-        update_user_limit(chat_id_u, new_limit)
-        send_message(chat_id, f"✅ Подтверждено: добавлено {add_count} фото для {ref}. Новый лимит: {new_limit}")
-        send_message(chat_id_u, f"✅ Ваш платёж подтверждён! Начислено {add_count} фото. Новый лимит: {new_limit}")
-        return True
-
-    elif cmd == "/reject":
-        if len(parts) < 2:
-            send_message(chat_id, "❌ Используй: /reject <ref>")
-            return True
-        ref = parts[1]
-        user = get_user_by_ref(ref)
-        if not user:
-            send_message(chat_id, f"❌ Пользователь с ref {ref} не найден")
-            return True
-        chat_id_u, end_date, limit, used, _ = user
-        send_message(chat_id_u, "❌ Ваш платёж отклонён. Проверьте правильность перевода или свяжитесь с админом.")
-        send_message(chat_id, f"✅ Отклонён платёж для {ref}")
-        return True
-
-    # Другие админ-команды (listusers, info, addphotos) — оставляем
-    elif cmd == "/listusers":
-        users = get_all_users()
-        if not users:
-            send_message(chat_id, "📭 Нет пользователей")
-            return True
-        msg = "📋 <b>Список пользователей:</b>\n\n"
-        for u in users:
-            chat_id_u, ref, limit, used, end, ref_count = u
-            remaining = limit - used
-            msg += f"• {ref} | осталось: {remaining} | всего: {limit} | рефералов: {ref_count}\n"
-        send_message(chat_id, msg)
-        return True
-
-    elif cmd == "/info":
-        if len(parts) < 2:
-            send_message(chat_id, "❌ Используй: /info <ref>")
-            return True
-        ref = parts[1]
-        user = get_user_by_ref(ref)
-        if not user:
-            send_message(chat_id, f"❌ Пользователь с ref {ref} не найден")
-            return True
-        chat_id_u, end_date, limit, used, _ = user
-        remaining = limit - used
-        send_message(chat_id,
-            f"📊 <b>Информация о {ref}</b>\n\n"
-            f"• Chat ID: {chat_id_u}\n"
-            f"• Всего фото: {limit}\n"
-            f"• Использовано: {used}\n"
-            f"• Осталось: {remaining}\n"
-            f"• Срок: {end_date}"
-        )
-        return True
-
-    else:
-        return False
-
-# ======================================================
-#  ОСНОВНОЙ ЦИКЛ БОТА (поллинг)
+#  БОТ-ПОЛЛИНГ
 # ======================================================
 def bot_polling():
     last_update_id = 0
@@ -433,44 +367,14 @@ def bot_polling():
                 if "message" in upd:
                     msg = upd["message"]
                     chat_id = msg["chat"]["id"]
-                    # Проверка на фото (чек)
                     if "photo" in msg:
-                        photo = msg["photo"][-1]  # берём самое качественное
-                        # Получаем файл
+                        photo = msg["photo"][-1]
                         file_id = photo["file_id"]
-                        # Скачиваем файл через getFile
-                        file_url = f"https://api.telegram.org/bot{BOT_TOKEN}/getFile?file_id={file_id}"
-                        resp_file = requests.get(file_url)
-                        if resp_file.status_code == 200:
-                            file_path = resp_file.json().get("result", {}).get("file_path")
-                            if file_path:
-                                file_download = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
-                                photo_data = requests.get(file_download)
-                                # Создаём объект файла для отправки админу
-                                from io import BytesIO
-                                photo_file = BytesIO(photo_data.content)
-                                photo_file.name = "check.jpg"
-                                # Передаём в обработчик (создадим объект, похожий на Flask-файл)
-                                class FakeFile:
-                                    def __init__(self, data, name):
-                                        self.stream = data
-                                        self.filename = name
-                                        self.mimetype = "image/jpeg"
-                                fake_file = FakeFile(photo_file, "check.jpg")
-                                handle_photo_message(chat_id, fake_file)
-                    # Текстовые сообщения
+                        handle_photo_message(chat_id, file_id)
                     if "text" in msg:
                         text = msg["text"]
                         if text.startswith("/start"):
                             handle_start(chat_id, text)
-                        else:
-                            if text.startswith("/"):
-                                handled = handle_admin_command(chat_id, text)
-                                if handled:
-                                    continue
-                            else:
-                                # Если пользователь что-то пишет, но не фото
-                                pass
                 if "callback_query" in upd:
                     cb = upd["callback_query"]
                     chat_id = cb["from"]["id"]
@@ -482,13 +386,95 @@ def bot_polling():
             time.sleep(5)
 
 # ======================================================
-#  FLASK (веб-сервер)
+#  FLASK + АДМИН-ПАНЕЛЬ
 # ======================================================
 app = Flask(__name__)
+app.secret_key = SECRET_KEY
 
-@app.before_request
-def log_request():
-    print(f"➡️ {request.method} {request.path} args={request.args}")
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not session.get('logged_in'):
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    error = None
+    if request.method == 'POST':
+        if request.form.get('password') == ADMIN_PASSWORD:
+            session['logged_in'] = True
+            return redirect(url_for('admin_panel'))
+        else:
+            error = 'Неверный пароль'
+    return render_template('login.html', error=error)
+
+@app.route('/logout')
+def logout():
+    session.pop('logged_in', None)
+    return redirect(url_for('login'))
+
+@app.route('/admin')
+@login_required
+def admin_panel():
+    users = get_all_users()
+    payments = get_pending_payments()
+    total_users = len(users)
+    total_photos = sum(u[2] for u in users)
+    return render_template('admin.html', users=users, payments=payments, total_users=total_users, total_photos=total_photos)
+
+@app.route('/admin/add', methods=['POST'])
+@login_required
+def admin_add():
+    ref = request.form.get('ref')
+    count = request.form.get('count', type=int)
+    if not ref or not count:
+        return 'Неверные данные', 400
+    user = get_user_by_ref(ref)
+    if not user:
+        return f'Пользователь {ref} не найден', 404
+    chat_id, end_date, limit, used, _ = user
+    new_limit = limit + count
+    update_user_limit(chat_id, new_limit)
+    send_message(chat_id, f"✅ Админ добавил {count} фото. Новый лимит: {new_limit}")
+    return redirect(url_for('admin_panel'))
+
+@app.route('/admin/confirm_payment/<int:payment_id>')
+@login_required
+def confirm_payment(payment_id):
+    conn = sqlite3.connect('db.sqlite')
+    c = conn.cursor()
+    c.execute('SELECT chat_id, ref, photos FROM pending_payments WHERE id=?', (payment_id,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return 'Платёж не найден', 404
+    chat_id, ref, photos = row
+    # Начисляем фото
+    user = get_user_by_ref(ref)
+    if user:
+        chat_id_u, end_date, limit, used, _ = user
+        new_limit = limit + photos
+        update_user_limit(chat_id_u, new_limit)
+        send_message(chat_id_u, f"✅ Платёж подтверждён! Начислено {photos} фото. Новый лимит: {new_limit}")
+    update_payment_status(payment_id, 'confirmed')
+    return redirect(url_for('admin_panel'))
+
+@app.route('/admin/reject_payment/<int:payment_id>')
+@login_required
+def reject_payment(payment_id):
+    conn = sqlite3.connect('db.sqlite')
+    c = conn.cursor()
+    c.execute('SELECT chat_id FROM pending_payments WHERE id=?', (payment_id,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return 'Платёж не найден', 404
+    chat_id = row[0]
+    send_message(chat_id, "❌ Платёж отклонён. Свяжитесь с админом.")
+    update_payment_status(payment_id, 'rejected')
+    return redirect(url_for('admin_panel'))
 
 @app.route('/upload', methods=['POST'])
 def upload():
@@ -508,7 +494,6 @@ def upload():
     if used >= limit:
         return jsonify({'error': 'Limit exceeded'}), 403
 
-    # Отправляем фото пользователю
     files = {'photo': (photo.filename, photo.stream, photo.mimetype)}
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
     data_user = {'chat_id': chat_id, 'caption': f"📸 Ваше фото (ref: {ref})"}
@@ -516,7 +501,6 @@ def upload():
     if resp_user.status_code != 200:
         return jsonify({'error': 'Telegram send to user failed'}), 500
 
-    # Копия админу
     photo.seek(0)
     files_copy = {'photo': (photo.filename, photo.stream, photo.mimetype)}
     data_admin = {'chat_id': ADMIN_CHAT_ID, 'caption': f"📸 Копия от {ref}"}
@@ -524,28 +508,6 @@ def upload():
 
     increment_used_photos(ref)
     return jsonify({'status': 'ok'})
-
-@app.route('/admin')
-def admin_panel():
-    users = get_all_users()
-    total_users = len(users)
-    total_photos = sum(u[2] for u in users)
-    return render_template('admin.html', users=users, total_users=total_users, total_photos=total_photos)
-
-@app.route('/admin/add', methods=['POST'])
-def admin_add():
-    ref = request.form.get('ref')
-    count = request.form.get('count', type=int)
-    if not ref or not count:
-        return 'Неверные данные', 400
-    user = get_user_by_ref(ref)
-    if not user:
-        return f'Пользователь {ref} не найден', 404
-    chat_id, end_date, limit, used, _ = user
-    new_limit = limit + count
-    update_user_limit(chat_id, new_limit)
-    send_message(chat_id, f"✅ Админ добавил {count} фото. Новый лимит: {new_limit}")
-    return 'OK', 200
 
 # ======================================================
 #  ЗАПУСК
