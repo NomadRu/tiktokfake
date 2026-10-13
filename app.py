@@ -17,14 +17,11 @@ ADMIN_CHAT_ID = 8533142719
 FREE_TRIAL_PHOTOS = 2
 ADMIN_USERNAME = "pytin_legend"
 
-# Пароль для входа в админку (смени на свой!)
 ADMIN_PASSWORD = "pytin2024"
-SECRET_KEY = "supersecretkey_change_me"  # для сессий
+SECRET_KEY = "supersecretkey_change_me"
 
-# Реквизиты для оплаты (СБП)
 PAYMENT_PHONE = "+79278880124"
 
-# Тарифы
 TARIFFS = [
     {"photos": 1,  "price": 5},
     {"photos": 10, "price": 30},
@@ -145,7 +142,7 @@ def update_payment_status(payment_id, status):
     conn.close()
 
 # ======================================================
-#  БОТ (только отправка сообщений и приём чеков)
+#  БОТ
 # ======================================================
 def send_message(chat_id, text, reply_markup=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -284,7 +281,6 @@ def handle_callback(chat_id, callback_id, data):
         photos = int(parts[2])
         price = int(parts[3])
         ref = get_user(chat_id)[0]
-        # Сохраняем в pending_payments
         add_pending_payment(chat_id, ref, photos, price)
         send_message(chat_id,
             f"📩 Отправь сюда <b>скриншот чека</b>.\n"
@@ -329,7 +325,6 @@ def handle_callback(chat_id, callback_id, data):
 #  ОБРАБОТКА ЧЕКОВ
 # ======================================================
 def handle_photo_message(chat_id, file_id):
-    # Скачиваем фото
     file_url = f"https://api.telegram.org/bot{BOT_TOKEN}/getFile?file_id={file_id}"
     resp = requests.get(file_url)
     if resp.status_code != 200:
@@ -341,7 +336,6 @@ def handle_photo_message(chat_id, file_id):
         return
     file_download = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
     photo_data = requests.get(file_download)
-    # Отправляем админу
     files = {'photo': ('check.jpg', photo_data.content, 'image/jpeg')}
     data = {'chat_id': ADMIN_CHAT_ID, 'caption': f"💳 Чек от {chat_id}\nПроверь в админ-панели."}
     requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto", data=data, files=files)
@@ -351,14 +345,15 @@ def handle_photo_message(chat_id, file_id):
 #  БОТ-ПОЛЛИНГ
 # ======================================================
 def bot_polling():
-    last_update_id = 0
     print("🤖 Бот запущен в фоне")
+    last_update_id = 0
     while True:
         try:
             url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
             params = {"offset": last_update_id + 1, "timeout": 30}
             resp = requests.get(url, params=params, timeout=35)
             if resp.status_code != 200:
+                print(f"❌ Ошибка getUpdates: {resp.text}")
                 time.sleep(5)
                 continue
             updates = resp.json().get("result", [])
@@ -451,7 +446,6 @@ def confirm_payment(payment_id):
     if not row:
         return 'Платёж не найден', 404
     chat_id, ref, photos = row
-    # Начисляем фото
     user = get_user_by_ref(ref)
     if user:
         chat_id_u, end_date, limit, used, _ = user
@@ -510,10 +504,19 @@ def upload():
     return jsonify({'status': 'ok'})
 
 # ======================================================
-#  ЗАПУСК
+#  ЗАПУСК (вне __main__, чтобы работало и под gunicorn)
 # ======================================================
+print("🚦 СТАРТ ПРИЛОЖЕНИЯ")
+init_db()
+print("🗄️ База данных инициализирована")
+
+def start_bot():
+    print("🚀 Запуск потока бота...")
+    bot_polling()
+
+bot_thread = threading.Thread(target=start_bot, daemon=True)
+bot_thread.start()
+print("🧵 Поток бота запущен")
+
 if __name__ == '__main__':
-    init_db()
-    bot_thread = threading.Thread(target=bot_polling, daemon=True)
-    bot_thread.start()
     app.run(host='0.0.0.0', port=5000, debug=False)
