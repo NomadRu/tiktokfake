@@ -3,62 +3,101 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Админ-панель ФотоШпион</title>
+    <title>Админ-панель</title>
     <style>
         body { font-family: Arial, sans-serif; margin: 20px; background: #f4f4f4; }
         h1 { color: #333; }
         .stats { background: #fff; padding: 15px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); margin-bottom: 20px; }
         .stats span { font-weight: bold; color: #fe2c55; }
-        table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+        table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 0 10px rgba(0,0,0,0.1); margin-bottom: 20px; }
         th, td { padding: 10px 15px; text-align: left; border-bottom: 1px solid #ddd; }
         th { background: #fe2c55; color: #fff; }
         tr:hover { background: #f9f9f9; }
-        .form-add { background: #fff; padding: 15px; border-radius: 8px; margin-top: 20px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
-        .form-add input[type="text"], .form-add input[type="number"] { padding: 8px; width: 200px; margin-right: 10px; border: 1px solid #ccc; border-radius: 4px; }
+        .form-add { background: #fff; padding: 15px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+        .form-add input { padding: 8px; margin-right: 10px; border: 1px solid #ccc; border-radius: 4px; }
         .form-add button { padding: 8px 20px; background: #fe2c55; color: #fff; border: none; border-radius: 4px; cursor: pointer; }
-        .form-add button:hover { background: #e0244a; }
+        .logout { float: right; padding: 8px 15px; background: #333; color: #fff; text-decoration: none; border-radius: 4px; }
+        .btn-confirm { background: #28a745; color: #fff; padding: 5px 10px; border-radius: 4px; text-decoration: none; }
+        .btn-reject { background: #dc3545; color: #fff; padding: 5px 10px; border-radius: 4px; text-decoration: none; }
         .status-ok { color: green; }
         .status-expired { color: red; }
     </style>
 </head>
 <body>
-    <h1>📸 ФотоШпион – Админ-панель</h1>
+    <a href="/logout" class="logout">Выйти</a>
+    <h1>📸 Админ-панель</h1>
+
     <div class="stats">
         <p>👥 Всего пользователей: <span>{{ total_users }}</span></p>
-        <p>📸 Всего куплено фото: <span>{{ total_photos }}</span></p>
+        <p>📸 Всего фото: <span>{{ total_photos }}</span></p>
     </div>
 
+    <h2>💳 Ожидающие платежи</h2>
+    {% if payments %}
+    <table>
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Ref</th>
+                <th>Фото</th>
+                <th>Сумма</th>
+                <th>Дата</th>
+                <th>Действие</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for p in payments %}
+            <tr>
+                <td>{{ p[0] }}</td>
+                <td><code>{{ p[2] }}</code></td>
+                <td>{{ p[3] }}</td>
+                <td>{{ p[4] }} руб</td>
+                <td>{{ p[5][:16] }}</td>
+                <td>
+                    <a href="/admin/confirm_payment/{{ p[0] }}" class="btn-confirm">✅ Подтвердить</a>
+                    <a href="/admin/reject_payment/{{ p[0] }}" class="btn-reject">❌ Отклонить</a>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+        <p>Нет ожидающих платежей.</p>
+    {% endif %}
+
     <div class="form-add">
-        <h3>➕ Добавить фото пользователю</h3>
+        <h3>➕ Добавить фото вручную</h3>
         <form action="/admin/add" method="POST">
-            <input type="text" name="ref" placeholder="Введите ref" required>
-            <input type="number" name="count" placeholder="Количество" min="1" required>
+            <input type="text" name="ref" placeholder="Ref" required>
+            <input type="number" name="count" placeholder="Кол-во" min="1" required>
             <button type="submit">Добавить</button>
         </form>
     </div>
 
-    <h2>📋 Список пользователей</h2>
+    <h2>📋 Пользователи</h2>
     <table>
         <thead>
             <tr>
                 <th>Chat ID</th>
                 <th>Ref</th>
-                <th>Всего фото</th>
+                <th>Всего</th>
                 <th>Использовано</th>
                 <th>Осталось</th>
+                <th>Рефералы</th>
                 <th>Статус</th>
             </tr>
         </thead>
         <tbody>
-            {% for user in users %}
+            {% for u in users %}
             <tr>
-                <td>{{ user[0] }}</td>
-                <td><code>{{ user[1] }}</code></td>
-                <td>{{ user[2] }}</td>
-                <td>{{ user[3] }}</td>
-                <td>{{ user[2] - user[3] }}</td>
+                <td>{{ u[0] }}</td>
+                <td><code>{{ u[1] }}</code></td>
+                <td>{{ u[2] }}</td>
+                <td>{{ u[3] }}</td>
+                <td>{{ u[2] - u[3] }}</td>
+                <td>{{ u[5] }}</td>
                 <td>
-                    {% if user[2] - user[3] > 0 %}
+                    {% if u[2] - u[3] > 0 %}
                         <span class="status-ok">✅ Активен</span>
                     {% else %}
                         <span class="status-expired">❌ Исчерпан</span>
@@ -69,4 +108,4 @@
         </tbody>
     </table>
 </body>
-  </html>
+</html>
