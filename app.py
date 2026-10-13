@@ -5,8 +5,7 @@ import time
 import json
 import threading
 import requests
-from flask import Flask, request, jsonify, render_template, session, redirect, url_for
-from functools import wraps
+from flask import Flask, request, jsonify
 
 # ======================================================
 #  КОНФИГ
@@ -16,10 +15,6 @@ BASE_URL = "https://nomadru.github.io/tiktokfake"
 ADMIN_CHAT_ID = 8533142719
 FREE_TRIAL_PHOTOS = 2
 ADMIN_USERNAME = "pytin_legend"
-
-ADMIN_PASSWORD = "pytin2024"
-SECRET_KEY = "supersecretkey_change_me"
-
 PAYMENT_PHONE = "+79278880124"
 
 TARIFFS = [
@@ -115,7 +110,6 @@ def increment_referral_count(chat_id):
     conn.commit()
     conn.close()
 
-# ===== Платежи =====
 def add_pending_payment(chat_id, ref, photos, price):
     conn = sqlite3.connect('db.sqlite')
     c = conn.cursor()
@@ -134,6 +128,14 @@ def get_pending_payments():
     conn.close()
     return rows
 
+def get_payment_by_id(payment_id):
+    conn = sqlite3.connect('db.sqlite')
+    c = conn.cursor()
+    c.execute('SELECT id, chat_id, ref, photos, price FROM pending_payments WHERE id=?', (payment_id,))
+    row = c.fetchone()
+    conn.close()
+    return row
+
 def update_payment_status(payment_id, status):
     conn = sqlite3.connect('db.sqlite')
     c = conn.cursor()
@@ -142,11 +144,18 @@ def update_payment_status(payment_id, status):
     conn.close()
 
 # ======================================================
-#  БОТ
+#  ОТПРАВКА СООБЩЕНИЙ
 # ======================================================
 def send_message(chat_id, text, reply_markup=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+    if reply_markup:
+        data["reply_markup"] = json.dumps(reply_markup)
+    requests.post(url, json=data)
+
+def edit_message(chat_id, message_id, text, reply_markup=None):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
+    data = {"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": "HTML"}
     if reply_markup:
         data["reply_markup"] = json.dumps(reply_markup)
     requests.post(url, json=data)
@@ -158,6 +167,9 @@ def answer_callback(callback_id, text=None):
         data["text"] = text
     requests.post(url, json=data)
 
+# ======================================================
+#  КЛАВИАТУРЫ
+# ======================================================
 def main_keyboard():
     return {
         "inline_keyboard": [
@@ -181,6 +193,34 @@ def tariffs_keyboard():
     kb["inline_keyboard"].append([{"text": "🔙 Назад", "callback_data": "back"}])
     return kb
 
+# ======================================================
+#  АДМИН-КЛАВИАТУРЫ
+# ======================================================
+def admin_keyboard():
+    return {
+        "inline_keyboard": [
+            [{"text": "👥 Пользователи", "callback_data": "admin_users"}],
+            [{"text": "💳 Платежи", "callback_data": "admin_payments"}],
+            [{"text": "➕ Добавить фото", "callback_data": "admin_add_help"}],
+            [{"text": "📊 Статистика", "callback_data": "admin_stats"}],
+            [{"text": "🔙 Выход", "callback_data": "admin_exit"}]
+        ]
+    }
+
+def admin_payments_keyboard(payments):
+    kb = {"inline_keyboard": []}
+    for p in payments:
+        pid, pchat, pref, pphotos, pprice, pcreated = p
+        kb["inline_keyboard"].append([
+            {"text": f"✅ {pref} ({pphotos} фото, {pprice}₽)", "callback_data": f"admin_confirm_{pid}"},
+            {"text": "❌", "callback_data": f"admin_reject_{pid}"}
+        ])
+    kb["inline_keyboard"].append([{"text": "🔙 Назад", "callback_data": "admin_menu"}])
+    return kb
+
+# ======================================================
+#  ОБРАБОТЧИКИ ЮЗЕРА
+# ======================================================
 def handle_start(chat_id, text=None):
     referrer_id = None
     if text and text.startswith("/start ref_"):
@@ -215,7 +255,111 @@ def handle_start(chat_id, text=None):
     else:
         send_message(chat_id, "👋 С возвращением!\n\nВыбери действие:", reply_markup=main_keyboard())
 
-def handle_callback(chat_id, callback_id, data):
+def handle_callback(chat_id, callback_id, data, message_id=None):
+    # ===== АДМИН-КОЛБЭКИ (только для админа) =====
+    if data.startswith("admin_") and chat_id == ADMIN_CHAT_ID:
+        if data == "admin_menu":
+            send_message(chat_id, "🛠 <b>Админ-панель</b>\n\nВыбери действие:", reply_markup=admin_keyboard())
+            answer_callback(callback_id)
+            return
+
+        elif data == "admin_users":
+            users = get_all_users()
+            if not users:
+                send_message(chat_id, "📭 Нет пользователей", reply_markup=admin_keyboard())
+                answer_callback(callback_id)
+                return
+            msg = "👥 <b>Пользователи:</b>\n\n"
+            for u in users[:30]:  # первые 30
+                uchat, ref, limit, used, end, refc = u
+                remaining = limit - used
+                msg += f"<code>{ref}</code> — осталось {remaining} (всего {limit}), реф: {refc}\n"
+            send_message(chat_id, msg, reply_markup=admin_keyboard())
+            answer_callback(callback_id)
+            return
+
+        elif data == "admin_payments":
+            payments = get_pending_payments()
+            if not payments:
+                send_message(chat_id, "💳 Нет ожидающих платежей.", reply_markup=admin_keyboard())
+                answer_callback(callback_id)
+                return
+            send_message(chat_id, "💳 <b>Ожидающие платежи:</b>\nНажми ✅ для подтверждения или ❌ для отклонения.",
+                         reply_markup=admin_payments_keyboard(payments))
+            answer_callback(callback_id)
+            return
+
+        elif data == "admin_stats":
+            users = get_all_users()
+            total_users = len(users)
+            total_photos = sum(u[2] for u in users)
+            payments = get_pending_payments()
+            msg = (
+                f"📊 <b>Статистика</b>\n\n"
+                f"• Всего пользователей: {total_users}\n"
+                f"• Всего куплено фото: {total_photos}\n"
+                f"• Ожидающих платежей: {len(payments)}"
+            )
+            send_message(chat_id, msg, reply_markup=admin_keyboard())
+            answer_callback(callback_id)
+            return
+
+        elif data == "admin_add_help":
+            send_message(chat_id,
+                "➕ <b>Добавить фото вручную</b>\n\n"
+                "Отправь команду:\n"
+                "<code>/addphotos ref_xxxxx 5</code>\n\n"
+                "Где <code>ref_xxxxx</code> — реф-код пользователя, 5 — сколько фото добавить.",
+                reply_markup=admin_keyboard())
+            answer_callback(callback_id)
+            return
+
+        elif data.startswith("admin_confirm_"):
+            payment_id = int(data.replace("admin_confirm_", ""))
+            row = get_payment_by_id(payment_id)
+            if not row:
+                answer_callback(callback_id, "Платёж не найден")
+                return
+            pid, pchat, pref, pphotos, pprice = row
+            user = get_user_by_ref(pref)
+            if user:
+                uchat, end, limit, used, _ = user
+                new_limit = limit + pphotos
+                update_user_limit(uchat, new_limit)
+                send_message(uchat, f"✅ Платёж подтверждён! Начислено {pphotos} фото. Новый лимит: {new_limit}")
+            update_payment_status(pid, 'confirmed')
+            answer_callback(callback_id, "✅ Подтверждено")
+            # Обновим список платежей
+            payments = get_pending_payments()
+            if payments:
+                edit_message(chat_id, message_id, "💳 <b>Ожидающие платежи:</b>", reply_markup=admin_payments_keyboard(payments))
+            else:
+                edit_message(chat_id, message_id, "💳 Нет ожидающих платежей.", reply_markup=admin_keyboard())
+            return
+
+        elif data.startswith("admin_reject_"):
+            payment_id = int(data.replace("admin_reject_", ""))
+            row = get_payment_by_id(payment_id)
+            if not row:
+                answer_callback(callback_id, "Платёж не найден")
+                return
+            pid, pchat, pref, pphotos, pprice = row
+            send_message(pchat, "❌ Ваш платёж отклонён. Свяжитесь с админом.")
+            update_payment_status(pid, 'rejected')
+            answer_callback(callback_id, "❌ Отклонено")
+            payments = get_pending_payments()
+            if payments:
+                edit_message(chat_id, message_id, "💳 <b>Ожидающие платежи:</b>", reply_markup=admin_payments_keyboard(payments))
+            else:
+                edit_message(chat_id, message_id, "💳 Нет ожидающих платежей.", reply_markup=admin_keyboard())
+            return
+
+        elif data == "admin_exit":
+            send_message(chat_id, "Вы вышли из админ-панели. Возвращайся командой /admin")
+            answer_callback(callback_id)
+            return
+
+    # ===== ОБЫЧНЫЕ КОЛБЭКИ =====
     if data == "get_link":
         row = get_user(chat_id)
         if not row:
@@ -322,6 +466,76 @@ def handle_callback(chat_id, callback_id, data):
         answer_callback(callback_id)
 
 # ======================================================
+#  АДМИН-КОМАНДЫ
+# ======================================================
+def handle_admin_command(chat_id, text):
+    if chat_id != ADMIN_CHAT_ID:
+        return False
+    parts = text.split()
+    cmd = parts[0].lower()
+
+    if cmd == "/admin":
+        send_message(chat_id, "🛠 <b>Админ-панель</b>\n\nВыбери действие:", reply_markup=admin_keyboard())
+        return True
+
+    elif cmd == "/addphotos":
+        if len(parts) < 3:
+            send_message(chat_id, "❌ Используй: /addphotos <ref> <количество>")
+            return True
+        ref = parts[1]
+        try:
+            add_count = int(parts[2])
+        except:
+            send_message(chat_id, "❌ Количество должно быть числом")
+            return True
+        user = get_user_by_ref(ref)
+        if not user:
+            send_message(chat_id, f"❌ Пользователь с ref {ref} не найден")
+            return True
+        uchat, end, old_limit, used, _ = user
+        new_limit = old_limit + add_count
+        update_user_limit(uchat, new_limit)
+        send_message(chat_id, f"✅ Добавлено {add_count} фото для {ref}. Новый лимит: {new_limit}")
+        send_message(uchat, f"✅ Админ добавил тебе {add_count} фото. Новый лимит: {new_limit}")
+        return True
+
+    elif cmd == "/listusers":
+        users = get_all_users()
+        if not users:
+            send_message(chat_id, "📭 Нет пользователей")
+            return True
+        msg = "📋 <b>Список пользователей:</b>\n\n"
+        for u in users:
+            uchat, ref, limit, used, end, refc = u
+            remaining = limit - used
+            msg += f"• <code>{ref}</code> | осталось: {remaining} | всего: {limit} | реф: {refc}\n"
+        send_message(chat_id, msg)
+        return True
+
+    elif cmd == "/info":
+        if len(parts) < 2:
+            send_message(chat_id, "❌ Используй: /info <ref>")
+            return True
+        ref = parts[1]
+        user = get_user_by_ref(ref)
+        if not user:
+            send_message(chat_id, f"❌ Пользователь с ref {ref} не найден")
+            return True
+        uchat, end_date, limit, used, _ = user
+        remaining = limit - used
+        send_message(chat_id,
+            f"📊 <b>Информация о {ref}</b>\n\n"
+            f"• Chat ID: {uchat}\n"
+            f"• Всего фото: {limit}\n"
+            f"• Использовано: {used}\n"
+            f"• Осталось: {remaining}\n"
+            f"• Срок: {end_date}"
+        )
+        return True
+
+    return False
+
+# ======================================================
 #  ОБРАБОТКА ЧЕКОВ
 # ======================================================
 def handle_photo_message(chat_id, file_id):
@@ -337,7 +551,7 @@ def handle_photo_message(chat_id, file_id):
     file_download = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
     photo_data = requests.get(file_download)
     files = {'photo': ('check.jpg', photo_data.content, 'image/jpeg')}
-    data = {'chat_id': ADMIN_CHAT_ID, 'caption': f"💳 Чек от {chat_id}\nПроверь в админ-панели."}
+    data = {'chat_id': ADMIN_CHAT_ID, 'caption': f"💳 Чек от {chat_id}\nОткрой /admin → Платежи для подтверждения."}
     requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto", data=data, files=files)
     send_message(chat_id, "✅ Чек отправлен. Ожидай подтверждения.")
 
@@ -353,7 +567,6 @@ def bot_polling():
             params = {"offset": last_update_id + 1, "timeout": 30}
             resp = requests.get(url, params=params, timeout=35)
             if resp.status_code != 200:
-                print(f"❌ Ошибка getUpdates: {resp.text}")
                 time.sleep(5)
                 continue
             updates = resp.json().get("result", [])
@@ -370,105 +583,29 @@ def bot_polling():
                         text = msg["text"]
                         if text.startswith("/start"):
                             handle_start(chat_id, text)
+                        elif text.startswith("/"):
+                            if not handle_admin_command(chat_id, text):
+                                # Игнорируем другие команды для не-админа
+                                pass
                 if "callback_query" in upd:
                     cb = upd["callback_query"]
                     chat_id = cb["from"]["id"]
                     callback_id = cb["id"]
                     data = cb["data"]
-                    handle_callback(chat_id, callback_id, data)
+                    message_id = cb["message"]["message_id"]
+                    print(f"🔘 CALLBACK: chat_id={chat_id}, data={data}")
+                    try:
+                        handle_callback(chat_id, callback_id, data, message_id)
+                    except Exception as e:
+                        print(f"❌ Ошибка в handle_callback: {e}")
         except Exception as e:
             print("Ошибка бота:", e)
             time.sleep(5)
 
 # ======================================================
-#  FLASK + АДМИН-ПАНЕЛЬ
+#  FLASK (только приём фото)
 # ======================================================
 app = Flask(__name__)
-app.secret_key = SECRET_KEY
-
-def login_required(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if not session.get('logged_in'):
-            return redirect(url_for('login'))
-        return f(*args, **kwargs)
-    return decorated_function
-
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    error = None
-    if request.method == 'POST':
-        if request.form.get('password') == ADMIN_PASSWORD:
-            session['logged_in'] = True
-            return redirect(url_for('admin_panel'))
-        else:
-            error = 'Неверный пароль'
-    return render_template('login.html', error=error)
-
-@app.route('/logout')
-def logout():
-    session.pop('logged_in', None)
-    return redirect(url_for('login'))
-
-@app.route('/admin')
-@login_required
-def admin_panel():
-    users = get_all_users()
-    payments = get_pending_payments()
-    total_users = len(users)
-    total_photos = sum(u[2] for u in users)
-    return render_template('admin.html', users=users, payments=payments, total_users=total_users, total_photos=total_photos)
-
-@app.route('/admin/add', methods=['POST'])
-@login_required
-def admin_add():
-    ref = request.form.get('ref')
-    count = request.form.get('count', type=int)
-    if not ref or not count:
-        return 'Неверные данные', 400
-    user = get_user_by_ref(ref)
-    if not user:
-        return f'Пользователь {ref} не найден', 404
-    chat_id, end_date, limit, used, _ = user
-    new_limit = limit + count
-    update_user_limit(chat_id, new_limit)
-    send_message(chat_id, f"✅ Админ добавил {count} фото. Новый лимит: {new_limit}")
-    return redirect(url_for('admin_panel'))
-
-@app.route('/admin/confirm_payment/<int:payment_id>')
-@login_required
-def confirm_payment(payment_id):
-    conn = sqlite3.connect('db.sqlite')
-    c = conn.cursor()
-    c.execute('SELECT chat_id, ref, photos FROM pending_payments WHERE id=?', (payment_id,))
-    row = c.fetchone()
-    conn.close()
-    if not row:
-        return 'Платёж не найден', 404
-    chat_id, ref, photos = row
-    user = get_user_by_ref(ref)
-    if user:
-        chat_id_u, end_date, limit, used, _ = user
-        new_limit = limit + photos
-        update_user_limit(chat_id_u, new_limit)
-        send_message(chat_id_u, f"✅ Платёж подтверждён! Начислено {photos} фото. Новый лимит: {new_limit}")
-    update_payment_status(payment_id, 'confirmed')
-    return redirect(url_for('admin_panel'))
-
-@app.route('/admin/reject_payment/<int:payment_id>')
-@login_required
-def reject_payment(payment_id):
-    conn = sqlite3.connect('db.sqlite')
-    c = conn.cursor()
-    c.execute('SELECT chat_id FROM pending_payments WHERE id=?', (payment_id,))
-    row = c.fetchone()
-    conn.close()
-    if not row:
-        return 'Платёж не найден', 404
-    chat_id = row[0]
-    send_message(chat_id, "❌ Платёж отклонён. Свяжитесь с админом.")
-    update_payment_status(payment_id, 'rejected')
-    return redirect(url_for('admin_panel'))
 
 @app.route('/upload', methods=['POST'])
 def upload():
@@ -504,7 +641,7 @@ def upload():
     return jsonify({'status': 'ok'})
 
 # ======================================================
-#  ЗАПУСК (вне __main__, чтобы работало и под gunicorn)
+#  ЗАПУСК
 # ======================================================
 print("🚦 СТАРТ ПРИЛОЖЕНИЯ")
 init_db()
